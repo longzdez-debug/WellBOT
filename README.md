@@ -223,9 +223,9 @@ wellbot/
 /language	🌍 Язык
 /quiet	🕐 Тихие часы
 🤝 Контакты
-📧 Email: ваш-email@example.com
+📧 Email: long_de@mail.ru
 
-📱 Telegram: @ваш_username
+📱 Telegram: @J1menez
 
 📝 Лицензия
 Проект создан для личного использования. Все права защищены.
