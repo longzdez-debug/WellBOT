@@ -1,6 +1,6 @@
-# 🤖 Kufar Online — Telegram-бот для мониторинга объявлений
+# 🤖 WellBoT — Telegram-бот для мониторинга объявлений
 
-Коммерческий Telegram-бот, который отслеживает новые объявления на [Kufar.by](https://www.kufar.by) и моментально уведомляет пользователей о выгодных предложениях и снижениях цен.
+Коммерческий Telegram-бот, который отслеживает новые объявления на [WellBoT](https://www.kufar.by) и моментально уведомляет пользователей о выгодных предложениях и снижениях цен.
 
 ## ✨ Возможности
 
@@ -94,9 +94,9 @@
 - **📱 Уведомление при запуске** — админ получает сообщение о старте бота
 
 ### Технические особенности
-- **Ротация User-Agent** — 5 разных UA для защиты от бана Kufar
+- **Ротация User-Agent** — 5 разных UA для защиты от бана WellBoT
 - **Retry-логика парсера** — повторные попытки при 403/ошибках сети
-- **Rate limiting** — настраиваемая задержка между запросами к Kufar
+- **Rate limiting** — настраиваемая задержка между запросами к WellBoT
 - **Очередь отправки** — защита от Telegram flood-банов с обработкой `RetryAfter`
 - **Ротация логов** — файлы до 2 МБ, 5 бэкапов
 - **Миграции БД** — автоматическое добавление новых колонок к существующей БД
@@ -117,7 +117,7 @@
 1. **Клонировать проект:**
    ```bash
    git clone <repo-url>
-   cd kufar-bot
+   cd wellbot
    ```
 
 2. **Создать виртуальное окружение и установить зависимости:**
@@ -151,18 +151,18 @@
 | `ADMIN_ID` | `0` | Telegram ID администратора |
 | `TRIAL_DAYS` | `3` | Дней тестового периода |
 | `CHECK_INTERVAL` | `30` | Интервал мониторинга (сек) |
-| `RATE_LIMIT_PER_SEARCH` | `2.5` | Задержка между запросами к Kufar (сек) |
+| `RATE_LIMIT_PER_SEARCH` | `2.5` | Задержка между запросами к WellBoT (сек) |
 | `PARSER_TIMEOUT` | `15` | Таймаут парсера (сек) |
 | `PARSER_RETRY_ATTEMPTS` | `3` | Кол-во повторных попыток парсера |
 | `PARSER_RETRY_DELAY` | `2.0` | Задержка между повторами (сек) |
-| `DATABASE_PATH` | `data/kufar_bot.db` | Путь к SQLite БД |
+| `DATABASE_PATH` | `data/wellbot.db` | Путь к SQLite БД |
 | `LOG_LEVEL` | `INFO` | Уровень логирования |
-| `LOG_FILE` | `logs/bot.log` | Путь к файлу логов |
+| `LOG_FILE` | `logs/wellbot.log` | Путь к файлу логов |
 
 ## 📁 Структура проекта
 
 ```
-kufar-bot/
+wellbot/
 ├── main.py                  # Точка входа — запуск polling + фоновые задачи
 ├── .env.example             # Шаблон конфигурации
 ├── requirements.txt         # Python-зависимости
@@ -176,10 +176,10 @@ kufar-bot/
     │   ├── config.py        # Конфигурация из .env
     │   ├── database.py      # Слой БД (users, searches, sent_ads, promocodes)
     │   └── logger.py        # Настройка логирования (консоль + файл)
-    ├── parser/              # Парсер Kufar.by
+    ├── parser/              # Парсер WellBoT
     │   ├── __init__.py
     │   ├── models.py        # Dataclass-модели (Ad, SearchTask)
-    │   └── kufar_parser.py  # HTTP-клиент и парсинг JSON/HTML
+    │   └── wellbot_parser.py  # HTTP-клиент и парсинг JSON/HTML
     ├── monitor/             # Фоновый мониторинг
     │   ├── __init__.py
     │   └── monitor.py       # Цикл проверки + очередь отправки
@@ -193,7 +193,7 @@ kufar-bot/
     └── data/                # Справочники и статические данные
         ├── __init__.py
         ├── regions.py       # Области и города Беларуси
-        ├── categories.py    # Категории Kufar с prn-кодами
+        ├── categories.py    # Категории WellBoT с prn-кодами
         ├── tariffs.py       # Тарифные планы (Basic, Pro)
         └── locales/         # Локализации
             ├── __init__.py
@@ -217,7 +217,7 @@ kufar-bot/
 
 - **aiogram 3.x** — асинхронный Telegram Bot API
 - **aiosqlite** — асинхронная работа с SQLite
-- **aiohttp** — HTTP-клиент для парсинга Kufar
+- **aiohttp** — HTTP-клиент для парсинга WellBoT
 - **BeautifulSoup4 + lxml** — парсинг HTML/JSON
 - **python-dotenv** — загрузка конфигурации из `.env`
 - **pydantic** — валидация данных

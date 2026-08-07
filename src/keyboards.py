@@ -17,22 +17,39 @@ PRESETS = {
 
 
 def get_main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
+    """Главное меню бота."""
     buttons = [
-        [InlineKeyboardButton(text="➕ Добавить поиск", callback_data="add_search"),
-         InlineKeyboardButton(text="📋 Мои поиски", callback_data="my_searches")],
+        [InlineKeyboardButton(text="🛒 Магазин цифровых товаров", callback_data="shop_menu")],
+        [InlineKeyboardButton(text="🔄 Перекуп", callback_data="reseller_menu")],
         [InlineKeyboardButton(text="👤 Кабинет", callback_data="profile"),
          InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
-        [InlineKeyboardButton(text="💳 Тарифы", callback_data="tariffs"),
-         InlineKeyboardButton(text="🎁 Рефералы", callback_data="referral")],
-        [InlineKeyboardButton(text="🏆 Бейджи", callback_data="badges"),
-         InlineKeyboardButton(text="🌍 Язык", callback_data="language_menu")],
-        [InlineKeyboardButton(text="🕐 Тихие часы", callback_data="quiet_hours_menu")],
-        [InlineKeyboardButton(text="ℹ️ Инструкция", callback_data="help"),
-         InlineKeyboardButton(text="💬 Поддержка", callback_data="support")],
+        [InlineKeyboardButton(text="🌍 Язык", callback_data="language_menu"),
+         InlineKeyboardButton(text="🕐 Тихие часы", callback_data="quiet_hours_menu")],
+        [InlineKeyboardButton(text="💬 Поддержка", callback_data="support_new")],
         [InlineKeyboardButton(text="🎟 Промокод", callback_data="promo_menu")]
     ]
     if is_admin:
         buttons.append([InlineKeyboardButton(text="⚙️ Админ панель", callback_data="admin_panel")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_reseller_menu() -> InlineKeyboardMarkup:
+    """Меню раздела Перекуп."""
+    buttons = [
+        [InlineKeyboardButton(text="🔍 KUFAR", callback_data="kufar_menu")],
+        [InlineKeyboardButton(text="❓ Инструкция", callback_data="help")],
+        [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="main_menu")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_kufar_menu() -> InlineKeyboardMarkup:
+    """Меню KUFAR."""
+    buttons = [
+        [InlineKeyboardButton(text="➕ Добавить поиск", callback_data="add_search")],
+        [InlineKeyboardButton(text="📋 Мои поиски", callback_data="my_searches")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="reseller_menu")]
+    ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -102,6 +119,8 @@ def get_admin_menu() -> InlineKeyboardMarkup:
           InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="🎟 Промокоды", callback_data="admin_promocodes"),
           InlineKeyboardButton(text="🚫 Бан/Разбан", callback_data="admin_ban_menu")],
+        [InlineKeyboardButton(text="💬 Обращения в поддержку", callback_data="admin_tickets")],
+        [InlineKeyboardButton(text="🛒 Управление товарами", callback_data="admin_shop_manage")],
         [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="main_menu")]
     ])
 
@@ -126,7 +145,7 @@ def get_add_search_type_menu() -> InlineKeyboardMarkup:
     for key, data in PRESETS.items():
         buttons.append([
             InlineKeyboardButton(text=f"➕ {data['title']}", callback_data=f"use_preset_{key}"),
-            InlineKeyboardButton(text="📩 Тест", callback_data=f"test_preset_{key}")
+            InlineKeyboardButton(text="📩 Последнее объявление", callback_data=f"test_preset_{key}")
         ])
     buttons.append([InlineKeyboardButton(text="📂 Поиск по категории", callback_data="search_by_category"),
                     InlineKeyboardButton(text="✏️ Свой запрос", callback_data="custom_query")])
@@ -230,3 +249,30 @@ def get_search_with_channel(search_id: int, has_channel: bool) -> InlineKeyboard
         buttons.append([InlineKeyboardButton(text="❌ Убрать канал", callback_data=f"channel_remove_{search_id}")])
     buttons.append([InlineKeyboardButton(text="◀️ Назад к поискам", callback_data="my_searches")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# ── Shop Keyboards ──────────────────────────────────
+
+def get_shop_menu(products: list) -> InlineKeyboardMarkup:
+    """Меню магазина с товарами."""
+    buttons = []
+    for product in products:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{product['icon']} {product['name']} — {product['price']}⭐",
+                callback_data=f"shop_buy_{product['id']}"
+            )
+        ])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_admin_shop_menu() -> InlineKeyboardMarkup:
+    """Меню управления магазином для админа."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить товар", callback_data="admin_shop_add")],
+        [InlineKeyboardButton(text="📋 Список товаров", callback_data="admin_shop_list")],
+        [InlineKeyboardButton(text="✏️ Редактировать товар", callback_data="admin_shop_edit")],
+        [InlineKeyboardButton(text="🗑 Удалить товар", callback_data="admin_shop_delete")],
+        [InlineKeyboardButton(text="◀️ Назад в админку", callback_data="admin_panel")]
+    ])

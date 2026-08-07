@@ -423,7 +423,7 @@ async def cb_test_preset(call: CallbackQuery, state: FSMContext):
     await state.update_data(test_preset_key=preset_key)
     try:
         await call.message.edit_text(
-            f"📍 Выберите область или город для <b>{preset['title']}</b>:",
+            f"📍 Выберите область или город (<b>{preset['title']}</b>):",
             reply_markup=get_regions_keyboard(is_test=True),
             parse_mode="HTML"
         )
@@ -482,7 +482,7 @@ async def fetch_and_send_test_ad(call: CallbackQuery, state: FSMContext, city_co
         await call.message.edit_text("❌ Ошибка получения параметров пресета.")
         return
 
-    await call.message.edit_text("🔍 Ищем последнее объявление...")
+    await call.message.edit_text("🔍 Запрашиваем актуальные объявления...")
 
     encoded_query = urllib.parse.quote(preset["query"])
     params = [f"query={encoded_query}", "sort=lst.d"]
@@ -565,7 +565,7 @@ async def fetch_and_send_test_ad(call: CallbackQuery, state: FSMContext, city_co
             logger.error(f"test_ad: send_message failed: {e}")
 
     await call.message.answer(
-        f"✅ Показано <b>последнее объявление</b> из {len(ads)} найденных.",
+        f"✅ Показано <b>самое свежее объявление</b> из {len(ads)} найденных.",
         reply_markup=get_main_menu(is_admin=user["is_admin"]),
         parse_mode="HTML"
     )

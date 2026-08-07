@@ -8,7 +8,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.state import State, StatesGroup
 
 from src.core.database import Database
-from src.parser import Ad
+from src.parser import Ad, WellBoTParser
 from src.data.tariffs import get_plan
 from src.core.config import config
 
@@ -122,17 +122,19 @@ async def send_profile_info(user_id: int, username: str, target_message: Message
         f"⏳ Действует до: <code>{user['subscription_until']}</code>\n\n"
         f"🌍 Язык: {lang_flag} {language.upper()}\n"
         f"🕐 Тихие часы: {quiet_start}:00 - {quiet_end}:00\n"
-        f"📊 Активных поисков: <b>{len(active_searches)}</b> / {plan.max_searches}\n"
+        f"📊 Активных проектов: <b>{len(active_searches)}</b> / {plan.max_searches}\n"
         f"👥 Приглашено друзей: <b>{referrals}</b>\n"
         f"🏆 Бейджей: <b>{len(await db.get_user_badges(user_id))}</b>"
     )
 
     keyboard_buttons = [
-        [InlineKeyboardButton(text="📋 Управлять поисками", callback_data="my_searches_cabinet"),
-         InlineKeyboardButton(text="💳 Тарифы", callback_data="tariffs")],
-        [InlineKeyboardButton(text="🌍 Язык", callback_data="language_menu"),
-         InlineKeyboardButton(text="🕐 Тихие часы", callback_data="quiet_hours_menu")],
-        [InlineKeyboardButton(text="◀️ Главное меню", callback_data="main_menu")]
+        [InlineKeyboardButton(text="📋 Управлять поисками", callback_data="my_searches_cabinet")],
+        [InlineKeyboardButton(text="💳 Тарифы", callback_data="tariffs"),
+         InlineKeyboardButton(text="🎁 Рефералы", callback_data="referral")],
+        [InlineKeyboardButton(text="🏆 Бейджи", callback_data="badges"),
+         InlineKeyboardButton(text="🌍 Язык", callback_data="language_menu")],
+        [InlineKeyboardButton(text="🕐 Тихие часы", callback_data="quiet_hours_menu"),
+         InlineKeyboardButton(text="◀️ Главное меню", callback_data="main_menu")]
     ]
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 

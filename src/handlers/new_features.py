@@ -215,11 +215,59 @@ async def process_channel_set(message: Message, state: FSMContext):
     search_id = data["search_id"]
     channel_input = message.text.strip().lstrip("@")
     try:
+        # Проверяем, существует ли канал и может ли бот отправлять туда сообщения
         channel_id = int(channel_input) if channel_input.isdigit() else channel_input
+        
+        # Проверяем доступность канала
+        try:
+            # Пытаемся получить информацию о канале
+            chat = await message.bot.get_chat(channel_id)
+            # Проверяем, что это канал или группа
+            if chat.type not in ["channel", "group", "supergroup"]:
+                await message.answer(
+                    "❌ Это не канал и не группа. Пожалуйста, отправьте имя канала (с @) или его ID.",
+                    reply_markup=get_back_button("my_searches"),
+                    parse_mode="HTML"
+                )
+                return
+            
+            # Проверяем, может ли бот отправлять сообщения
+            try:
+                await message.bot.send_message(channel_id, "✅ Бот успешно подключён к каналу! Теперь сюда будут приходить уведомления.")
+            except Exception:
+                await message.answer(
+                    "❌ Бот не может отправлять сообщения в этот канал. Убедитесь, что бот добавлен в канал и имеет права на отправку сообщений.",
+                    reply_markup=get_back_button("my_searches"),
+                    parse_mode="HTML"
+                )
+                return
+                
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "chat not found" in error_msg or "user not found" in error_msg:
+                await message.answer(
+                    "❌ Канал не найден. Убедитесь, что вы правильно ввели имя канала (с @) или ID, и что бот добавлен в канал.",
+                    reply_markup=get_back_button("my_searches"),
+                    parse_mode="HTML"
+                )
+            else:
+                await message.answer(
+                    f"❌ Не удалось проверить канал: {e}",
+                    reply_markup=get_back_button("my_searches"),
+                    parse_mode="HTML"
+                )
+            return
+        
         await get_db().add_channel_for_search(search_id, message.from_user.id, channel_id)
         await state.clear()
         await message.answer(
             "✅ Канал установлен для этого поиска!",
+            reply_markup=get_back_button("my_searches"),
+            parse_mode="HTML"
+        )
+    except ValueError:
+        await message.answer(
+            "❌ Неверный формат. Введите ID канала (число) или имя (с @).",
             reply_markup=get_back_button("my_searches"),
             parse_mode="HTML"
         )

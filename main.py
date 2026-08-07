@@ -1,4 +1,4 @@
-"""Kufar Online Bot — entry point."""
+"""WellBoT — entry point."""
 
 import asyncio
 import logging
@@ -23,16 +23,16 @@ async def notify_admin_on_startup(bot: Bot):
         try:
             await bot.send_message(
                 config.ADMIN_ID,
-                "🤖 <b>Бот Kufar Online запущен и работает!</b>\n\n"
-                "✅ Новые функции:\n"
-                "📸 Только фото\n"
-                "🌍 Мультиязычность (RU/BY/EN)\n"
-                "📊 Расширенная аналитика Pro\n"
-                "⏰ Напоминания о конце подписки\n"
+                "🤖 <b>WellBoT — Универсальный бот-помощник запущен!</b>\n\n"
+                "🚀 Доступные функции:\n"
+                "🔄 Мониторинг площадок (Kufar, OLX, и др.)\n"
+                "🎯 Социальная инженерия и OSINT\n"
+                "🎮 Steam — трекер скидок и аккаунтов\n"
+                "💬 Анонимная поддержка\n"
+                "📊 Аналитика рынка\n"
+                "🏆 Геймификация\n"
+                "🌍 Мультиязычность\n"
                 "🕐 Тихие часы\n"
-                "📢 Групповой режим (каналы)\n"
-                "🏆 Геймификация (бейджи)\n"
-                "🧠 Умный спам-фильтр\n"
                 "💤 Напоминания о неактивности",
                 parse_mode="HTML"
             )
@@ -56,7 +56,7 @@ async def setup_bot_ui(bot: Bot):
 
 async def main():
     setup_logging()
-    logger.info("🤖 Запуск бота Kufar Online...")
+    logger.info("🤖 Запуск бота WellBoT...")
 
     bot = Bot(
         token=config.BOT_TOKEN,

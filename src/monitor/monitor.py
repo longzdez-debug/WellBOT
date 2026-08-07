@@ -1,4 +1,4 @@
-"""Monitoring — polls Kufar for new ads and sends notifications.
+"""Monitoring — polls WellBoT for new ads and sends notifications.
 
 Features:
 - Photos only filtering
@@ -18,17 +18,17 @@ from datetime import datetime, timedelta
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton
 
-from src.parser import KufarParser
+from src.parser import WellBoTParser
 from src.core.database import Database
 from src.handlers.common import analyze_market_price, format_list_time
 from src.core.config import config
 from src.data.tariffs import PLANS, DEFAULT_MAX_PHOTOS, DEFAULT_MONITORING_INTERVAL
-from src.data.locales import get_locale, t
+from src.data.locales import get_locale
 
 logger = logging.getLogger(__name__)
 
 notification_queue = asyncio.Queue()
-_parser = KufarParser()
+_parser = WellBoTParser()
 
 
 def get_ad_keyboard(ad_url: str) -> InlineKeyboardMarkup:
@@ -61,7 +61,35 @@ def _is_spam(ad_title: str, ad_description: str) -> bool:
 
 def _is_quiet_hours(user_id: int) -> bool:
     """Check if current time is within user's quiet hours."""
-    return False
+    try:
+        import asyncio
+        from datetime import datetime, timezone, timedelta
+        
+        # Получаем настройки из базы данных
+        async def _get_quiet_hours():
+            cursor = await db.connection.execute(
+                "SELECT quiet_start, quiet_end FROM users WHERE user_id = ?",
+                (user_id,)
+            )
+            row = await cursor.fetchone()
+            if row:
+                return row["quiet_start"], row["quiet_end"]
+            return "00", "08"
+        
+        # Запускаем асинхронную функцию синхронно
+        loop = asyncio.get_event_loop()
+        quiet_start, quiet_end = loop.run_until_complete(_get_quiet_hours())
+        
+        current_hour = datetime.now().hour
+        start = int(quiet_start)
+        end = int(quiet_end)
+        
+        if start <= end:
+            return start <= current_hour < end
+        else:  # Обработка случая, когда период переходит через полночь
+            return current_hour >= start or current_hour < end
+    except Exception:
+        return False
 
 
 # ── Subscription Expiry Check ─────────────────────
@@ -83,7 +111,15 @@ async def _check_subscription_expiry(user_id: int, bot, db: Database, search_id:
             sub_until = datetime.fromisoformat(sub_until)
         days_left = (sub_until - datetime.now()).days
         
-        if 0 < days_left <= 3:  # Expiring in 3 days or less
+        # Используем таблицу sent_ads для отслеживания отправленных напоминаний
+        cursor = await db.connection.execute(
+            "SELECT COUNT(*) FROM sent_ads WHERE user_id = ? AND ad_id = 'EXPIRY_REMINDER_' || strftime('%Y-%m-%d', 'now')",
+            (user_id,)
+        )
+        row = await cursor.fetchone()
+        reminder_sent_today = row[0] > 0 if row else False
+        
+        if 0 < days_left <= 3 and not reminder_sent_today:
             language = user["language"] or "ru"
             locale = get_locale(language)
             await bot.send_message(
@@ -91,9 +127,15 @@ async def _check_subscription_expiry(user_id: int, bot, db: Database, search_id:
                 locale["sub_expiring_soon"].format(days=days_left),
                 parse_mode="HTML"
             )
+            # Сохраняем факт отправки напоминания
+            await db.connection.execute(
+                "INSERT INTO sent_ads (user_id, ad_id, search_id, price) VALUES (?, ?, 0, 0)",
+                (user_id, f"EXPIRY_REMINDER_{datetime.now().strftime('%Y-%m-%d')}", search_id)
+            )
+            await db.connection.commit()
             logger.info(f"Sent subscription expiry reminder to user {user_id}")
         
-        return days_left <= 0  # Return True if expired
+        return days_left <= 0
     except Exception as e:
         logger.error(f"Error checking subscription expiry: {e}")
         return False
@@ -414,7 +456,7 @@ async def _process_search(search: dict, db: Database, bot) -> int:
 
 
 async def start_monitoring(bot, db: Database):
-    """Background monitoring — polls Kufar for new ads.
+    """Background monitoring — polls WellBoT for new ads.
     
     Features:
     - Pro users get priority (15s interval vs 30s)
@@ -487,13 +529,14 @@ async def start_monitoring(bot, db: Database):
                 logger.debug(f"cleanup_old_sent_ads: {e}")
             cleanup_counter = 0
 
-        # Check badges every 50 cycles
+        # Check badges and inactivity every 50 cycles
         badge_check_counter += 1
         if badge_check_counter >= 50:
             try:
                 users = await db.get_all_users()
                 for user in users[:10]:  # Check 10 users per cycle
                     await _check_and_award_badges(user["user_id"], bot, db)
+                    await _check_inactivity(user["user_id"], bot, db)
             except Exception as e:
                 logger.error(f"Badge check error: {e}")
             badge_check_counter = 0

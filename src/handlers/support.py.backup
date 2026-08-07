@@ -1,0 +1,260 @@
+"""Support system with anonymous tickets."""
+import asyncio
+import logging
+from datetime import datetime
+
+from aiogram import F
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+
+from src.core.config import config
+from src.keyboards import get_back_button
+from .common import router, get_db, logger
+
+
+# ── FSM States ─────────────────────────────────────
+
+class SupportState(StatesGroup):
+    waiting_for_message = State()
+    waiting_for_reply = State()
+
+
+# ── User Handlers ─────────────────────────────────
+
+@router.callback_query(F.data == "support_new")
+async def cb_support_start(call: CallbackQuery, state: FSMContext):
+    """Начало обращения в поддержку."""
+    await call.answer()
+    await state.set_state(SupportState.waiting_for_message)
+    await call.message.edit_text(
+        "💬 <b>Поддержка</b>\n\n"
+        "Опишите вашу проблему или вопрос.\n"
+        "Администратор ответит вам в ближайшее время.\n\n"
+        "✏️ Напишите ваше сообщение:",
+        reply_markup=get_back_button("main_menu"),
+        parse_mode="HTML"
+    )
+
+
+@router.message(SupportState.waiting_for_message)
+async def process_support_message(message: Message, state: FSMContext):
+    """Обработка сообщения от пользователя."""
+    user_id = message.from_user.id
+    username = message.from_user.username or f"User{user_id}"
+    msg_text = message.text
+    
+    if not msg_text or len(msg_text) < 3:
+        await message.answer(
+            "❌ Сообщение слишком короткое. Напишите хотя бы 3 символа.",
+            reply_markup=get_back_button("main_menu"),
+            parse_mode="HTML"
+        )
+        return
+    
+    if len(msg_text) > 1000:
+        await message.answer(
+            "❌ Сообщение слишком длинное (максимум 1000 символов).",
+            reply_markup=get_back_button("main_menu"),
+            parse_mode="HTML"
+        )
+        return
+    
+    # Создаём обращение
+    db = get_db()
+    cursor = await db.connection.execute(
+        """INSERT INTO support_tickets (user_id, username, message, status, created_at)
+           VALUES (?, ?, ?, 'open', CURRENT_TIMESTAMP)""",
+        (user_id, username, msg_text)
+    )
+    await db.connection.commit()
+    ticket_id = cursor.lastrowid
+    
+    # Уведомляем администратора
+    admin_id = config.ADMIN_ID
+    if admin_id:
+        try:
+            admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📝 Ответить", callback_data=f"support_reply_{ticket_id}")],
+                [InlineKeyboardButton(text="❌ Закрыть", callback_data=f"support_close_{ticket_id}")]
+            ])
+            
+            await message.bot.send_message(
+                admin_id,
+                f"🆕 <b>Новое обращение в поддержку!</b>\n\n"
+                f"📋 ID: <code>#{ticket_id}</code>\n"
+                f"👤 Пользователь: <a href='tg://user?id={user_id}'>{username}</a>\n"
+                f"🆔 User ID: <code>{user_id}</code>\n"
+                f"📝 Сообщение:\n{msg_text}\n\n"
+                f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+                reply_markup=admin_keyboard,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Не удалось уведомить администратора: {e}")
+    
+    await state.clear()
+    await message.answer(
+        "✅ <b>Ваше обращение отправлено!</b>\n\n"
+        "Администратор ответит вам в ближайшее время.",
+        reply_markup=get_back_button("main_menu"),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("support_reply_"))
+async def cb_support_reply(call: CallbackQuery, state: FSMContext):
+    """Начало ответа на обращение."""
+    await call.answer()
+    
+    if call.from_user.id != config.ADMIN_ID:
+        await call.message.answer("❌ Доступ запрещён.")
+        return
+    
+    ticket_id = int(call.data.replace("support_reply_", ""))
+    db = get_db()
+    cursor = await db.connection.execute(
+        "SELECT * FROM support_tickets WHERE id = ?",
+        (ticket_id,)
+    )
+    ticket = await cursor.fetchone()
+    
+    if not ticket:
+        await call.message.answer("❌ Обращение не найдено.")
+        return
+    
+    if ticket["status"] == "closed":
+        await call.message.answer("❌ Это обращение уже закрыто.")
+        return
+    
+    await state.set_state(SupportState.waiting_for_reply)
+    await state.update_data(ticket_id=ticket_id)
+    
+    await call.message.edit_text(
+        f"📝 <b>Ответ на обращение #{ticket_id}</b>\n\n"
+        f"👤 Пользователь: {ticket['username']}\n"
+        f"📝 Сообщение:\n{ticket['message']}\n\n"
+        f"✏️ Напишите ваш ответ:",
+        reply_markup=get_back_button("admin_panel"),
+        parse_mode="HTML"
+    )
+
+
+@router.message(SupportState.waiting_for_reply)
+async def process_support_reply(message: Message, state: FSMContext):
+    """Отправка ответа пользователю."""
+    if message.from_user.id != config.ADMIN_ID:
+        await message.answer("❌ Доступ запрещён.")
+        return
+    
+    data = await state.get_data()
+    ticket_id = data.get("ticket_id")
+    
+    if not ticket_id:
+        await message.answer("❌ Ошибка: ID обращения не найден.")
+        await state.clear()
+        return
+    
+    reply_text = message.text
+    if not reply_text or len(reply_text) < 3:
+        await message.answer("❌ Ответ слишком короткий.")
+        return
+    
+    db = get_db()
+    cursor = await db.connection.execute(
+        "SELECT user_id FROM support_tickets WHERE id = ?",
+        (ticket_id,)
+    )
+    ticket = await cursor.fetchone()
+    
+    if not ticket:
+        await message.answer("❌ Обращение не найдено.")
+        await state.clear()
+        return
+    
+    # Отправляем ответ пользователю
+    user_id = ticket["user_id"]
+    try:
+        await message.bot.send_message(
+            user_id,
+            f"💬 <b>Ответ от поддержки</b>\n\n"
+            f"📋 Обращение #{ticket_id}\n"
+            f"📝 {reply_text}\n\n"
+            f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+            parse_mode="HTML"
+        )
+        await message.answer(f"✅ Ответ на обращение #{ticket_id} отправлен.")
+    except Exception as e:
+        await message.answer(f"❌ Не удалось отправить ответ: {e}")
+    
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("support_close_"))
+async def cb_support_close(call: CallbackQuery):
+    """Закрытие обращения администратором."""
+    await call.answer()
+    
+    if call.from_user.id != config.ADMIN_ID:
+        await call.message.answer("❌ Доступ запрещён.")
+        return
+    
+    ticket_id = int(call.data.replace("support_close_", ""))
+    db = get_db()
+    await db.connection.execute(
+        "UPDATE support_tickets SET status = 'closed', closed_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (ticket_id,)
+    )
+    await db.connection.commit()
+    
+    await call.message.edit_text(
+        f"✅ Обращение #{ticket_id} закрыто.",
+        reply_markup=get_back_button("admin_panel"),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "admin_tickets")
+async def cb_admin_tickets(call: CallbackQuery):
+    """Просмотр всех открытых обращений."""
+    await call.answer()
+    
+    if call.from_user.id != config.ADMIN_ID:
+        await call.message.answer("❌ Доступ запрещён.")
+        return
+    
+    db = get_db()
+    cursor = await db.connection.execute(
+        "SELECT * FROM support_tickets WHERE status = 'open' ORDER BY created_at DESC"
+    )
+    tickets = await cursor.fetchall()
+    
+    if not tickets:
+        await call.message.edit_text(
+            "📭 Нет открытых обращений.",
+            reply_markup=get_back_button("admin_panel"),
+            parse_mode="HTML"
+        )
+        return
+    
+    text = "📋 <b>Открытые обращения:</b>\n\n"
+    for t in tickets[:10]:
+        text += f"#{t['id']} | {t['username']} | {t['created_at']}\n"
+        text += f"📝 {t['message'][:50]}...\n\n"
+    
+    buttons = []
+    for t in tickets[:5]:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"#{t['id']} - {t['username']}",
+                callback_data=f"support_reply_{t['id']}"
+            )
+        ])
+    
+    if buttons:
+        buttons.append([InlineKeyboardButton(text="◀️ Назад в админку", callback_data="admin_panel")])
+        markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+    else:
+        markup = get_back_button("admin_panel")
+    
+    await call.message.edit_text(text, reply_markup=markup, parse_mode="HTML")

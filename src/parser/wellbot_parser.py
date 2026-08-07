@@ -1,4 +1,4 @@
-"""Kufar parser — fetches ads from Kufar.by using JSON API."""
+"""WellBoT parser — fetches ads from WellBoT using JSON API."""
 
 import asyncio
 import logging
@@ -23,7 +23,7 @@ USER_AGENTS = [
 ]
 
 
-class KufarParser:
+class WellBoTParser:
     def __init__(self):
         self.retry_attempts = config.PARSER_RETRY_ATTEMPTS
         self.retry_delay = config.PARSER_RETRY_DELAY
@@ -38,7 +38,7 @@ class KufarParser:
         }
 
     async def fetch_ads(self, url: str) -> List[Ad]:
-        """Fetch ads from Kufar URL with retry logic."""
+        """Fetch ads from WellBoT URL with retry logic."""
         ads: List[Ad] = []
         self._zero_results = False
 
@@ -47,13 +47,13 @@ class KufarParser:
                 async with aiohttp.ClientSession(headers=self._get_headers()) as session:
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
                         if response.status == 403:
-                            logger.warning(f"KufarParser: 403 Forbidden (attempt {attempt}/{self.retry_attempts}) for {url}")
+                            logger.warning(f"WellBoTParser: 403 Forbidden (attempt {attempt}/{self.retry_attempts}) for {url}")
                             if attempt < self.retry_attempts:
                                 await asyncio.sleep(self.retry_delay * attempt)
                                 continue
                             return ads
                         if response.status != 200:
-                            logger.warning(f"KufarParser: status {response.status} for {url}")
+                            logger.warning(f"WellBoTParser: status {response.status} for {url}")
                             return ads
                         html = await response.text()
 
@@ -66,14 +66,14 @@ class KufarParser:
                     await asyncio.sleep(self.retry_delay)
 
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                logger.warning(f"KufarParser network error (attempt {attempt}/{self.retry_attempts}) for {url}: {exc}")
+                logger.warning(f"WellBoTParser network error (attempt {attempt}/{self.retry_attempts}) for {url}: {exc}")
                 if attempt < self.retry_attempts:
                     await asyncio.sleep(self.retry_delay * attempt)
                 else:
-                    logger.error(f"KufarParser: all retries exhausted for {url}")
+                    logger.error(f"WellBoTParser: all retries exhausted for {url}")
                     return ads
             except Exception as exc:
-                logger.exception(f"KufarParser failed parsing {url}: {exc}")
+                logger.exception(f"WellBoTParser failed parsing {url}: {exc}")
                 return ads
 
         return ads
@@ -189,7 +189,7 @@ class KufarParser:
                 city = f"{area_item}, {region_item}" if area_item else region_item
 
                 # Description and images
-                description = item.get('body', 'Новое предложение на Kufar')
+                description = item.get('body', 'Новое предложение на WellBoT')
                 images = []
                 for img in item.get('images', []):
                     path = img.get('path', '')
@@ -206,7 +206,7 @@ class KufarParser:
 
                 ads.append(Ad(
                     id=ad_id,
-                    title=item.get('subject', 'Объявление Kufar'),
+                    title=item.get('subject', 'Объявление WellBoT'),
                     price=price_text,
                     url=link,
                     city=city,

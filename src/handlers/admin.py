@@ -12,7 +12,8 @@ from .common import router, get_db, AdminState, AdminPriceState
 
 
 def _is_admin(user_id: int) -> bool:
-    return user_id == config.ADMIN_ID
+    """Check if user is admin by ID (supports multiple admins)."""
+    return user_id in config.ADMIN_IDS
 
 
 @router.callback_query(F.data == "admin_panel")

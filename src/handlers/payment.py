@@ -39,7 +39,7 @@ async def cb_buy_plan(call: CallbackQuery):
     prices = [LabeledPrice(label=f"{plan.name} ({plan.duration_days} дней)", amount=plan.price_stars)]
     await call.bot.send_invoice(
         chat_id=call.from_user.id,
-        title=f"Подписка Kufar Online — {plan.name}",
+        title=f"Подписка WellBoT — {plan.name}",
         description=plan.description,
         payload=f"subscription_{plan_key}_{plan.duration_days}days",
         provider_token="",

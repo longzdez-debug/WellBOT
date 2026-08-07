@@ -6,7 +6,7 @@ from typing import Optional, List
 
 @dataclass
 class Ad:
-    """Represents a Kufar advertisement."""
+    """Represents a WellBoT advertisement."""
     id: str = ""
     title: str = ""
     price: str = ""

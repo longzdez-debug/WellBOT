@@ -1,4 +1,4 @@
 from .models import Ad, SearchTask
-from .kufar_parser import KufarParser
+from .wellbot_parser import WellBoTParser
 
-__all__ = ["Ad", "SearchTask", "KufarParser"]
+__all__ = ["Ad", "SearchTask", "WellBoTParser"]

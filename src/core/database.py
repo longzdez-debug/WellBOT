@@ -141,6 +141,57 @@ class Database:
         await self.connection.execute("CREATE INDEX IF NOT EXISTS idx_searches_user_active ON searches(user_id, is_active)")
         await self.connection.execute("CREATE INDEX IF NOT EXISTS idx_users_language ON users(language)")
 
+        # Support tables
+        await self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS support_tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                username TEXT,
+                message TEXT NOT NULL,
+                status TEXT DEFAULT 'open',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                closed_at TIMESTAMP
+            )
+        """)
+        await self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS support_replies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id INTEGER NOT NULL,
+                admin_id INTEGER NOT NULL,
+                message TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await self.connection.execute("CREATE INDEX IF NOT EXISTS idx_support_tickets_status ON support_tickets(status)")
+        await self.connection.execute("CREATE INDEX IF NOT EXISTS idx_support_tickets_user ON support_tickets(user_id)")
+
+        # Shop tables
+        await self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS shop_products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT,
+                price INTEGER NOT NULL,
+                icon TEXT DEFAULT '📦',
+                image_path TEXT,
+                stock INTEGER DEFAULT 999,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS shop_purchases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                price INTEGER NOT NULL,
+                purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(product_id) REFERENCES shop_products(id)
+            )
+        """)
+        await self.connection.execute("CREATE INDEX IF NOT EXISTS idx_shop_purchases_user ON shop_purchases(user_id)")
+        await self.connection.execute("CREATE INDEX IF NOT EXISTS idx_shop_products_active ON shop_products(is_active)")
+
         # Initialize badges if not exists
         cursor = await self.connection.execute("SELECT COUNT(*) FROM badges")
         row = await cursor.fetchone()
@@ -413,7 +464,7 @@ class Database:
             INSERT OR REPLACE INTO sent_ads (user_id, ad_id, search_id, price)
             VALUES (?, ?, ?, ?)
             """,
-            user_id, ad_id, search_id, price
+            (user_id, ad_id, search_id, price)
         )
         await self.connection.commit()
 
