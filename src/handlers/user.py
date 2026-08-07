@@ -1,0 +1,824 @@
+"""User-facing handlers: start, profile, searches, stats, referral, support."""
+import urllib.parse
+import logging
+
+from aiogram import F
+from aiogram.filters import Command
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
+
+from src.keyboards import (
+    PRESETS,
+    get_main_menu,
+    get_searches_menu,
+    get_search_management_menu,
+    get_back_button,
+    get_regions_keyboard,
+    get_cities_keyboard,
+    get_add_search_type_menu,
+    get_categories_keyboard,
+)
+from src.parser import Ad, SearchTask, KufarParser
+from src.data.regions import REGIONS
+from src.data.tariffs import PLANS, get_plan
+from src.data.categories import CATEGORIES
+from src.core.config import config
+
+from .common import (
+    router, get_db, logger,
+    AddSearchState, EditSearchState,
+    analyze_market_price, extract_numeric_price,
+    send_profile_info, format_list_time,
+)
+
+
+# ── Basic Commands ─────────────────────────────────
+
+@router.message(Command("start"))
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
+    referrer_id = None
+    if message.text and message.text.startswith("/start ref_"):
+        try:
+            referrer_id = int(message.text.replace("/start ref_", "").strip())
+        except ValueError:
+            pass
+
+    user = await get_db().get_or_create_user(message.from_user.id, message.from_user.username, referrer_id=referrer_id)
+    await message.answer(
+        f"👋 <b>Привет, {message.from_user.first_name}!</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 <b>Kufar Online</b> — мониторинг объявлений\n"
+        f"━━━━━━━━━━━━━━━━━━━\n\n"
+        f"⚡ Первым находи самые выгодные предложения на Kufar\n"
+        f"🔔 Получай уведомления о новых объявлениях мгновенно\n"
+        f"📊 Анализируй цены относительно рынка\n\n"
+        f"🎁 <b>Тестовый период</b> до <code>{user['subscription_until']}</code>\n"
+        f"📋 Тариф: <b>{get_plan(user.get('tariff_plan', 'basic')).name}</b>\n\n"
+        f"👇 Выберите действие в меню ниже:",
+        reply_markup=get_main_menu(is_admin=user["is_admin"]),
+        parse_mode="HTML"
+    )
+
+
+@router.message(Command("profile"))
+@router.message(Command("cabinet"))
+async def cmd_profile(message: Message):
+    await send_profile_info(message.from_user.id, message.from_user.username, target_message=message)
+
+
+@router.callback_query(F.data == "main_menu")
+async def cb_main_menu(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    user = await get_db().get_or_create_user(call.from_user.id, call.from_user.username)
+    await call.message.edit_text(
+        f"🏠 <b>Главное меню</b>\n\n"
+        f"👇 Выберите раздел:",
+        reply_markup=get_main_menu(is_admin=user["is_admin"]),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "profile")
+async def cb_profile(call: CallbackQuery):
+    await call.answer()
+    await send_profile_info(call.from_user.id, call.from_user.username, call=call)
+
+
+# ── Searches Management ────────────────────────────
+
+@router.callback_query(F.data == "my_searches")
+async def cb_my_searches(call: CallbackQuery):
+    await call.answer()
+    user_id = call.from_user.id
+    raw_searches = await get_db().get_user_searches(user_id)
+
+    if not raw_searches:
+        await call.message.edit_text(
+            "📭 У вас пока нет сохраненных поисков.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="➕ Добавить поиск", callback_data="add_search")],
+                [InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu")]
+            ]),
+            parse_mode="HTML"
+        )
+        return
+
+    searches = [SearchTask(**s) for s in raw_searches]
+    await call.message.edit_text(
+        "🔎 <b>Ваши поиски:</b>\n❌ — удалить | ⏸ — пауза | ✏️ — изменить",
+        reply_markup=get_searches_menu(searches),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("toggle_search_"))
+async def cb_toggle_search(call: CallbackQuery):
+    search_id = int(call.data.replace("toggle_search_", ""))
+    new_state = await get_db().toggle_search_active(search_id, call.from_user.id)
+    await call.answer(f"{'▶️ Возобновлено' if new_state else '⏸ Поставлено на паузу'}")
+    await cb_my_searches(call)
+
+
+async def _render_search_management(call: CallbackQuery, search_id: int):
+    search = await get_db().get_search_by_id(search_id, call.from_user.id)
+    if not search:
+        await call.message.edit_text("❌ Поиск не найден.", reply_markup=get_back_button("my_searches"))
+        return
+
+    status = "🟢 Активен" if search.get("is_active", 1) else "⏸ На паузе"
+    blacklist = search.get("excluded_keywords") or "не задан"
+    threshold = search.get("price_drop_threshold", 0.0)
+    only_photos = bool(search.get("only_photos", 0))
+
+    text = (
+        f"✏️ <b>Управление поиском</b>\n\n"
+        f"📌 Название: <b>{search['title']}</b>\n"
+        f"💰 Цена: {search['min_price']} – {search['max_price'] or '∞'} р.\n"
+        f"📊 Статус: {status}\n"
+        f"🚫 Исключения: <code>{blacklist}</code>\n"
+        f"📉 Порог снижения: {threshold if threshold > 0 else 'не задан'} р.\n"
+        f"📸 Только с фото: {'✅ да' if only_photos else '❌ нет'}"
+    )
+    await call.message.edit_text(
+        text,
+        reply_markup=get_search_management_menu(search_id, bool(search.get("is_active", 1)), only_photos),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("edit_search_"))
+async def cb_edit_search(call: CallbackQuery):
+    await call.answer()
+    search_id = int(call.data.replace("edit_search_", ""))
+    await _render_search_management(call, search_id)
+
+
+@router.callback_query(F.data.startswith("toggle_photos_"))
+async def cb_toggle_photos(call: CallbackQuery):
+    search_id = int(call.data.replace("toggle_photos_", ""))
+    search = await get_db().get_search_by_id(search_id, call.from_user.id)
+    if not search:
+        await call.answer("❌ Поиск не найден.", show_alert=True)
+        return
+    new_value = not bool(search.get("only_photos", 0))
+    await get_db().update_search(search_id, call.from_user.id, only_photos=new_value)
+    await call.answer("📸 Только с фото: ВКЛ" if new_value else "🖼 Только с фото: ВЫКЛ")
+    await _render_search_management(call, search_id)
+
+
+@router.callback_query(F.data.startswith("edit_title_"))
+async def cb_edit_title(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    search_id = int(call.data.replace("edit_title_", ""))
+    await state.update_data(edit_search_id=search_id)
+    await state.set_state(EditSearchState.waiting_for_title)
+    await call.message.edit_text(
+        "✏️ Введите новое название для поиска:",
+        reply_markup=get_back_button("my_searches"),
+        parse_mode="HTML"
+    )
+
+
+@router.message(EditSearchState.waiting_for_title)
+async def process_edit_title(message: Message, state: FSMContext):
+    data = await state.get_data()
+    search_id = data.get("edit_search_id")
+    new_title = message.text.strip()
+    await get_db().update_search(search_id, message.from_user.id, title=new_title)
+    await state.clear()
+    await message.answer(f"✅ Название изменено на <b>{new_title}</b>", reply_markup=get_back_button("my_searches"), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("edit_price_"))
+async def cb_edit_price(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    search_id = int(call.data.replace("edit_price_", ""))
+    await state.update_data(edit_search_id=search_id)
+    await state.set_state(EditSearchState.waiting_for_min_price)
+    await call.message.edit_text(
+        "💰 Введите <b>минимальную цену</b> (или <code>0</code>):",
+        reply_markup=get_back_button("my_searches"),
+        parse_mode="HTML"
+    )
+
+
+@router.message(EditSearchState.waiting_for_min_price)
+async def process_edit_min_price(message: Message, state: FSMContext):
+    try:
+        min_p = float(message.text.strip().replace(" ", ""))
+    except ValueError:
+        min_p = 0.0
+    await state.update_data(edit_min_price=min_p)
+    await message.answer("💰 Введите <b>максимальную цену</b> (или <code>0</code>):", reply_markup=get_back_button("my_searches"), parse_mode="HTML")
+    await state.set_state(EditSearchState.waiting_for_max_price)
+
+
+@router.message(EditSearchState.waiting_for_max_price)
+async def process_edit_max_price(message: Message, state: FSMContext):
+    data = await state.get_data()
+    search_id = data.get("edit_search_id")
+    min_p = data.get("edit_min_price", 0.0)
+    try:
+        max_p = float(message.text.strip().replace(" ", ""))
+    except ValueError:
+        max_p = 0.0
+    await get_db().update_search(search_id, message.from_user.id, min_price=min_p, max_price=max_p)
+    await state.clear()
+    await message.answer(
+        f"✅ Цены обновлены: {min_p} – {max_p if max_p > 0 else '∞'} р.",
+        reply_markup=get_back_button("my_searches"),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("edit_blacklist_"))
+async def cb_edit_blacklist(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    search_id = int(call.data.replace("edit_blacklist_", ""))
+    await state.update_data(edit_search_id=search_id)
+    await state.set_state(EditSearchState.waiting_for_blacklist)
+    await call.message.edit_text(
+        "🚫 Введите слова-исключения через запятую.\n"
+        "<i>Пример: разбит, не работает, запчаст</i>\n"
+        "Отправьте <code>0</code> чтобы очистить.",
+        reply_markup=get_back_button("my_searches"),
+        parse_mode="HTML"
+    )
+
+
+@router.message(EditSearchState.waiting_for_blacklist)
+async def process_edit_blacklist(message: Message, state: FSMContext):
+    data = await state.get_data()
+    search_id = data.get("edit_search_id")
+    text = message.text.strip()
+    kw = None if text == "0" else text
+    await get_db().update_search(search_id, message.from_user.id, excluded_keywords=kw)
+    await state.clear()
+    await message.answer(
+        f"✅ Исключения {'очищены' if not kw else 'обновлены'}",
+        reply_markup=get_back_button("my_searches"),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("edit_threshold_"))
+async def cb_edit_threshold(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    search_id = int(call.data.replace("edit_threshold_", ""))
+    await state.update_data(edit_search_id=search_id)
+    await state.set_state(EditSearchState.waiting_for_threshold)
+    await call.message.edit_text(
+        "📉 Введите <b>порог снижения цены</b> в рублях.\n"
+        "<i>Уведомление придёт только если цена упала больше чем на эту сумму.</i>\n"
+        "Отправьте <code>0</code> чтобы отключить.",
+        reply_markup=get_back_button("my_searches"),
+        parse_mode="HTML"
+    )
+
+
+@router.message(EditSearchState.waiting_for_threshold)
+async def process_edit_threshold(message: Message, state: FSMContext):
+    data = await state.get_data()
+    search_id = data.get("edit_search_id")
+    try:
+        threshold = float(message.text.strip().replace(" ", ""))
+    except ValueError:
+        threshold = 0.0
+    await get_db().update_search(search_id, message.from_user.id, price_drop_threshold=threshold)
+    await state.clear()
+    await message.answer(
+        f"✅ Порог снижения {'отключён' if threshold == 0 else f'установлен: {threshold} р.'}",
+        reply_markup=get_back_button("my_searches"),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("delete_search_"))
+async def cb_delete_search_direct(call: CallbackQuery):
+    search_id = int(call.data.replace("delete_search_", ""))
+    await get_db().delete_search(search_id, call.fromuser.id)
+    await call.answer("✅ Поиск удалён!")
+    await cb_my_searches(call)
+
+
+@router.callback_query(F.data == "my_searches_cabinet")
+async def cb_my_searches_cabinet(call: CallbackQuery):
+    await call.answer()
+    user_id = call.from_user.id
+    searches = await get_db().get_user_searches(user_id)
+
+    if not searches:
+        await call.message.edit_text(
+            "📭 У вас пока нет активных поисков.\nСоздайте их через главное меню!",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ В личный кабинет", callback_data="profile")]
+            ]),
+            parse_mode="HTML"
+        )
+        return
+
+    buttons = []
+    for s in searches:
+        title = s['title'] if len(s['title']) < 25 else s['title'][:22] + "..."
+        channel_info = f" 📢" if s.get('channel_id') else ""
+        buttons.append([
+            InlineKeyboardButton(text=f"❌ Удалить: {title}{channel_info}", callback_data=f"del_search_{s['id']}"),
+            InlineKeyboardButton(text="📢 Канал", callback_data=f"channel_set_{s['id']}")
+        ])
+
+    buttons.append([InlineKeyboardButton(text="◀️ Назад в кабинет", callback_data="profile")])
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    await call.message.edit_text(
+        "📋 <b>Ваши активные поиски:</b>\nНажмите, чтобы удалить или настроить канал.",
+        reply_markup=markup,
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("del_search_"))
+async def cb_delete_search_cabinet(call: CallbackQuery):
+    search_id = int(call.data.replace("del_search_", ""))
+    await get_db().delete_search(search_id, call.from_user.id)
+    await call.answer("✅ Поиск удалён!")
+    await cb_my_searches_cabinet(call)
+
+
+# ── Add Search ─────────────────────────────────────
+
+@router.callback_query(F.data == "add_search")
+async def cb_add_search(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    has_sub = await get_db().check_subscription(call.from_user.id)
+    if not has_sub:
+        await call.message.edit_text("❌ Ваша подписка истекла!", reply_markup=get_back_button("main_menu"), parse_mode="HTML")
+        return
+
+    plan_key = await get_db().get_tariff_plan(call.from_user.id)
+    plan = get_plan(plan_key)
+    count = await get_db().count_user_searches(call.from_user.id)
+    if count >= plan.max_searches:
+        await call.message.edit_text(
+            f"❌ Достигнут лимит поисков для тарифа {plan.name} ({plan.max_searches}).\n"
+            "Удалите ненужные поиски или перейдите на более высокий тариф.",
+            reply_markup=get_back_button("main_menu"),
+            parse_mode="HTML"
+        )
+        return
+
+    await state.clear()
+    await call.message.edit_text(
+        "➕ <b>Добавление нового поиска</b>\n\nВыберите пресет или введите свой товар:",
+        reply_markup=get_add_search_type_menu(),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("use_preset_"))
+async def cb_use_preset(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    preset_key = call.data.replace("use_preset_", "")
+    preset = PRESETS.get(preset_key)
+    if not preset:
+        return
+    await state.update_data(
+        query=preset["query"],
+        title=preset["title"],
+        category_prn=preset.get("prn"),
+        category_name=preset.get("title"),
+        category_cat=preset.get("cat"),
+    )
+    await call.message.edit_text(
+        f"Выбран пресет: <b>{preset['title']}</b>\n\n💰 Введите <b>минимальную цену</b> (или <code>0</code>):",
+        reply_markup=get_back_button(),
+        parse_mode="HTML"
+    )
+    await state.set_state(AddSearchState.waiting_for_min_price)
+
+
+@router.callback_query(F.data.startswith("test_preset_"))
+async def cb_test_preset(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    preset_key = call.data.replace("test_preset_", "")
+    preset = PRESETS.get(preset_key)
+    if not preset:
+        logger.warning(f"test_preset: preset '{preset_key}' not found")
+        return
+
+    logger.info(f"test_preset: selected '{preset_key}'")
+    await state.update_data(test_preset_key=preset_key)
+    try:
+        await call.message.edit_text(
+            f"📍 Выберите область или город (<b>{preset['title']}</b>):",
+            reply_markup=get_regions_keyboard(is_test=True),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"test_preset: edit_text failed: {e}")
+        try:
+            await call.message.answer(
+                f"📍 Выберите область или город (<b>{preset['title']}</b>):",
+                reply_markup=get_regions_keyboard(is_test=True),
+                parse_mode="HTML"
+            )
+        except Exception as e2:
+            logger.error(f"test_preset: answer also failed: {e2}")
+
+
+@router.callback_query(F.data.startswith("test_reg_"))
+async def cb_test_select_region(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    region_id = call.data.replace("test_reg_", "")
+
+    if region_id == "all_belarus":
+        await fetch_and_send_test_ad(call, state, "")
+        return
+
+    reg_data = REGIONS.get(region_id, {})
+    data = await state.get_data()
+    preset_key = data.get("test_preset_key")
+    preset = PRESETS.get(preset_key, {})
+    has_category = bool(preset.get("prn"))
+
+    if not reg_data.get("cities"):
+        await fetch_and_send_test_ad(call, state, reg_data.get("code", ""))
+    elif has_category:
+        await fetch_and_send_test_ad(call, state, reg_data.get("code", ""))
+    else:
+        await call.message.edit_text(
+            "🏘️ Выберите город:",
+            reply_markup=get_cities_keyboard(region_id, is_test=True),
+            parse_mode="HTML"
+        )
+
+
+@router.callback_query(F.data.startswith("test_city_"))
+async def cb_test_select_city(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    city_code = call.data.replace("test_city_", "")
+    await fetch_and_send_test_ad(call, state, city_code)
+
+
+async def fetch_and_send_test_ad(call: CallbackQuery, state: FSMContext, city_code: str):
+    data = await state.get_data()
+    preset_key = data.get("test_preset_key")
+    preset = PRESETS.get(preset_key)
+
+    if not preset:
+        await call.message.edit_text("❌ Ошибка получения параметров пресета.")
+        return
+
+    await call.message.edit_text("🔍 Запрашиваем актуальные объявления...")
+
+    encoded_query = urllib.parse.quote(preset["query"])
+    params = [f"query={encoded_query}", "sort=lst.d"]
+
+    prn = preset.get("prn")
+    cat = preset.get("cat")
+    if prn:
+        params.append(f"prn={prn}")
+    if cat:
+        params.append(f"cat={cat}")
+
+    if city_code:
+        url = f"https://www.kufar.by/l/{city_code}?" + "&".join(params)
+    else:
+        url = "https://www.kufar.by/l?" + "&".join(params)
+
+    parser = KufarParser()
+    ads = await parser.fetch_ads(url)
+
+    if not ads:
+        await call.message.edit_text(
+            "❌ Не удалось найти объявления по данному запросу в выбранном регионе.\n"
+            "💡 Попробуйте выбрать <b>другую область</b> или <b>«🔍 По всей Беларуси»</b>.",
+            reply_markup=get_regions_keyboard(is_test=True),
+            parse_mode="HTML"
+        )
+        return
+
+    await state.clear()
+
+    user = await get_db().get_or_create_user(call.from_user.id, call.from_user.username)
+    ad = ads[0]
+
+    if not ad.description:
+        details = await parser.fetch_ad_details(ad.url)
+        ad.description = details["description"]
+        seller = details["seller"]
+    else:
+        seller = ""
+
+    numeric_price = extract_numeric_price(ad.price)
+    market_evaluation = analyze_market_price(numeric_price, ads)
+    market_evaluation = market_evaluation.replace("**", "")
+
+    desc_text = ad.description if ad.description else "Описание отсутствует."
+    if len(desc_text) > 250:
+        desc_text = desc_text[:247] + "..."
+
+    text = (
+        f"🚨 <b>Новое объявление!</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 <b>{ad.title}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n\n"
+        f"💰 <b>Цена:</b> <code>{ad.price}</code>\n"
+        f"📍 <b>Локация:</b> {ad.city}\n"
+        + (f"👤 <b>Продавец:</b> {seller}\n" if seller else "")
+        + (f"🕐 <b>Опубликовано:</b> {format_list_time(ad.list_time)}\n" if ad.list_time else "")
+        + f"\n📝 <b>Описание:</b>\n{desc_text}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>Оценка рынка:</b> {market_evaluation}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🔗 <a href='{ad.url}'>Перейти к объявлению</a>"
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 Написать продавцу", url=ad.url)]
+    ])
+    sent = False
+    if ad.images:
+        try:
+            await call.bot.send_photo(chat_id=call.from_user.id, photo=ad.images[0], caption=text, parse_mode="HTML", reply_markup=keyboard)
+            sent = True
+        except Exception as e:
+            logger.warning(f"test_ad: send_photo failed: {e}")
+
+    if not sent:
+        try:
+            await call.bot.send_message(chat_id=call.from_user.id, text=text, parse_mode="HTML", disable_web_page_preview=True, reply_markup=keyboard)
+        except Exception as e:
+            logger.error(f"test_ad: send_message failed: {e}")
+
+    await call.message.answer(
+        f"✅ Показано <b>самое свежее объявление</b> из {len(ads)} найденных.",
+        reply_markup=get_main_menu(is_admin=user["is_admin"]),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "custom_query")
+async def cb_custom_query(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.set_state(AddSearchState.waiting_for_title)
+    await call.message.edit_text("📝 Введите название товара:", reply_markup=get_back_button(), parse_mode="HTML")
+
+
+@router.message(AddSearchState.waiting_for_title)
+async def process_custom_title(message: Message, state: FSMContext):
+    query_text = message.text.strip()
+    await state.update_data(query=query_text, title=query_text)
+    await message.answer("💰 Введите <b>минимальную цену</b> (или <code>0</code>):", reply_markup=get_back_button(), parse_mode="HTML")
+    await state.set_state(AddSearchState.waiting_for_min_price)
+
+
+@router.message(AddSearchState.waiting_for_min_price)
+async def process_min_price(message: Message, state: FSMContext):
+    try:
+        min_p = float(message.text.strip().replace(" ", ""))
+    except ValueError:
+        min_p = 0.0
+    await state.update_data(min_price=min_p)
+    await message.answer("💰 Введите <b>максимальную цену</b> (или <code>0</code>):", reply_markup=get_back_button(), parse_mode="HTML")
+    await state.set_state(AddSearchState.waiting_for_max_price)
+
+
+@router.message(AddSearchState.waiting_for_max_price)
+async def process_max_price(message: Message, state: FSMContext):
+    try:
+        max_p = float(message.text.strip().replace(" ", ""))
+    except ValueError:
+        max_p = 0.0
+    await state.update_data(max_price=max_p)
+
+    data = await state.get_data()
+    if data.get("category_prn"):
+        await message.answer("📍 Выберите область или город:", reply_markup=get_regions_keyboard(), parse_mode="HTML")
+    else:
+        await message.answer("📂 Выберите категорию поиска:", reply_markup=get_categories_keyboard(), parse_mode="HTML")
+
+
+# ── Category Selection ─────────────────────────────
+
+@router.callback_query(F.data == "search_by_category")
+async def cb_search_by_category(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    has_sub = await get_db().check_subscription(call.from_user.id)
+    if not has_sub:
+        await call.message.edit_text("❌ Ваша подписка истекла!", reply_markup=get_back_button("main_menu"), parse_mode="HTML")
+        return
+
+    plan_key = await get_db().get_tariff_plan(call.from_user.id)
+    plan = get_plan(plan_key)
+    count = await get_db().count_user_searches(call.from_user.id)
+    if count >= plan.max_searches:
+        await call.message.edit_text(
+            f"❌ Достигнут лимит поисков для тарифа {plan.name} ({plan.max_searches}).",
+            reply_markup=get_back_button("main_menu"),
+            parse_mode="HTML"
+        )
+        return
+
+    await state.clear()
+    await call.message.edit_text(
+        "📂 <b>Поиск по категории</b>\n\nВыберите категорию:",
+        reply_markup=get_categories_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("cat_"))
+async def cb_select_category(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    cat_id = call.data.replace("cat_", "")
+    data = await state.get_data()
+
+    if cat_id != "none":
+        cat_data = CATEGORIES.get(cat_id)
+        if cat_data:
+            await state.update_data(category_prn=cat_data["prn"], category_name=cat_data["name"], category_cat=None)
+    else:
+        await state.update_data(category_prn=None, category_name=None, category_cat=None)
+
+    if not data.get("query"):
+        cat_name = cat_data["name"] if cat_id != "none" and cat_data else "Без категории"
+        await call.message.edit_text(
+            f"Выбрана категория: <b>{cat_name}</b>\n\n📝 Введите название товара для поиска:",
+            reply_markup=get_back_button("add_search"),
+            parse_mode="HTML"
+        )
+        await state.set_state(AddSearchState.waiting_for_title)
+    else:
+        await call.message.edit_text("📍 Выберите область или город:", reply_markup=get_regions_keyboard(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("select_reg_"))
+async def cb_select_region(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    region_id = call.data.replace("select_reg_", "")
+
+    if region_id == "all_belarus":
+        await save_final_search(call, state, "")
+        return
+
+    reg_data = REGIONS.get(region_id, {})
+    data = await state.get_data()
+    category_prn = data.get("category_prn")
+
+    if not reg_data.get("cities"):
+        await save_final_search(call, state, reg_data.get("code", ""))
+    elif category_prn:
+        await save_final_search(call, state, reg_data.get("code", ""))
+    else:
+        await call.message.edit_text("🏘️ Выберите город:", reply_markup=get_cities_keyboard(region_id), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("set_city_"))
+async def cb_set_city(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await save_final_search(call, state, call.data.replace("set_city_", ""))
+
+
+async def save_final_search(call: CallbackQuery, state: FSMContext, city_code: str):
+    data = await state.get_data()
+    query = data.get("query", "Товар")
+    title = data.get("title", query)
+    min_p = data.get("min_price", 0.0)
+    max_p = data.get("max_price", 0.0)
+    category_prn = data.get("category_prn")
+    category_name = data.get("category_name")
+    category_cat = data.get("category_cat")
+
+    encoded_query = urllib.parse.quote(query)
+
+    if category_prn:
+        base = f"https://www.kufar.by/l/{city_code}" if city_code else "https://www.kufar.by/l"
+        params = [f"query={encoded_query}", f"prn={category_prn}"]
+        if category_cat:
+            params.append(f"cat={category_cat}")
+        url = base + "?" + "&".join(params)
+        if title == query:
+            title = f"{query} [{category_name}]" if category_name else query
+    else:
+        url = f"https://www.kufar.by/l/{city_code}?query={encoded_query}" if city_code else f"https://www.kufar.by/l?query={encoded_query}"
+
+    await get_db().add_search(call.from_user.id, title, url, min_p, max_p)
+    await state.clear()
+
+    user = await get_db().get_or_create_user(call.from_user.id, call.from_user.username)
+    cat_text = f"\n📂 Категория: {category_name}" if category_name else ""
+    await call.message.edit_text(
+        f"✅ <b>Поиск создан!</b>\n📌 {title}\n💰 {min_p} – {max_p if max_p > 0 else '∞'} р.{cat_text}",
+        reply_markup=get_main_menu(is_admin=user["is_admin"]),
+        parse_mode="HTML"
+    )
+
+
+# ── Statistics ─────────────────────────────────────
+
+@router.callback_query(F.data == "stats")
+async def cb_stats(call: CallbackQuery):
+    await call.answer()
+    stats = await get_db().get_user_stats(call.from_user.id)
+    referrals = await get_db().get_referrals_count(call.from_user.id)
+    searches = await get_db().get_user_searches(call.from_user.id)
+    active_count = sum(1 for s in searches if s.get("is_active", 1))
+    plan_key = await get_db().get_tariff_plan(call.from_user.id)
+    plan = get_plan(plan_key)
+    badges = await get_db().get_user_badges(call.from_user.id)
+
+    # Basic stats for all users
+    stats_text = (
+        f"📊 <b>Ваша статистика</b>\n\n"
+        f"🔍 Всего поисков: <b>{len(searches)}</b>\n"
+        f"🟢 Активных: <b>{active_count}</b>\n"
+        f"📩 Найдено объявлений: <b>{stats['total_ads']}</b>\n"
+        f"👥 Приглашено друзей: <b>{referrals}</b>\n"
+        f"🏆 Бейджей: <b>{len(badges)}</b>"
+    )
+
+    # Pro-only extended analytics
+    if plan.priority:
+        weekly_stats = await get_db().get_user_weekly_stats(call.from_user.id)
+        avg_per_day = round(stats['total_ads'] / 30, 1) if stats['total_ads'] > 0 else 0
+        
+        stats_text += (
+            f"\n━━━━━━━━━━━━━━━━━━━\n"
+            f"🚀 <b>Расширенная аналитика (Pro)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📈 Приоритетный мониторинг: <b>активен</b>\n"
+            f"🖼 Фото в уведомлениях: <b>{plan.max_photos} шт</b>\n"
+            f"⏱ Интервал проверки: <b>{plan.monitoring_interval} сек</b>\n"
+            f"📊 Всего найдено за всё время: <b>{stats['total_ads']}</b>\n"
+            f"📅 Среднее в день: <b>{avg_per_day}</b>"
+        )
+        
+        if weekly_stats:
+            stats_text += f"\n\n<b>📈 Последняя неделя:</b>\n"
+            for week in weekly_stats[:3]:
+                stats_text += f"📅 {week['week_start']}: {week['total_ads']} объявлений, "
+                stats_text += f"ср. цена {round(week['avg_price'], 1)} р.\n"
+
+    await call.message.edit_text(
+        stats_text,
+        reply_markup=get_back_button("main_menu"),
+        parse_mode="HTML"
+    )
+
+
+# ── Referral ───────────────────────────────────────
+
+@router.callback_query(F.data == "referral")
+async def cb_referral(call: CallbackQuery):
+    await call.answer()
+    user_id = call.from_user.id
+    referrals = await get_db().get_referrals_count(user_id)
+    bot_info = await call.bot.get_me()
+    bot_username = bot_info.username
+    ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+
+    await call.message.edit_text(
+        f"🎁 <b>Реферальная программа</b>\n\n"
+        f"Приглашайте друзей и получайте <b>+1 день подписки</b> за каждого!\n\n"
+        f"👥 Вы пригласили: <b>{referrals}</b> чел.\n\n"
+        f"🔗 Ваша ссылка:\n<code>{ref_link}</code>",
+        reply_markup=get_back_button(),
+        parse_mode="HTML"
+    )
+
+
+# ── Support & Help ─────────────────────────────────
+
+@router.callback_query(F.data == "support")
+async def cb_support(call: CallbackQuery):
+    await call.answer()
+    await call.message.edit_text(
+        "💬 <b>Служба поддержки</b>\n\n"
+        "Если у вас возникли вопросы, напишите администратору:\n\n"
+        "👨‍💻 <b>Контакты:</b> @admin_support\n"
+        "⏱ <b>Время работы:</b> 09:00 - 22:00",
+        reply_markup=get_back_button(),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "help")
+async def cb_help(call: CallbackQuery):
+    await call.answer()
+    await call.message.edit_text(
+        "📖 <b>Инструкция Kufar Online</b>\n\n"
+        "1. <b>➕ Добавить поиск</b> — выберите пресет или введите свой товар.\n"
+        "2. Укажите мин/макс цену (0 = пропустить).\n"
+        "3. Выберите область или город.\n"
+        "4. Бот уведомит о новых объявлениях!\n\n"
+        "💡 <b>Дополнительно:</b>\n"
+        "• ✏️ Редактируйте поиски (цена, blacklist, порог снижения)\n"
+        "• ⏸ Ставьте поиск на паузу\n"
+        "• 📊 Смотрите статистику\n"
+        "• 🎁 Приглашайте друзей за бонусы\n"
+        "• 🎸 Используйте промокоды",
+        reply_markup=get_back_button(),
+        parse_mode="HTML"
+    )
