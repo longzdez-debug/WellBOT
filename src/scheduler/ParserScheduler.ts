@@ -226,12 +226,12 @@ export class ParserScheduler {
         }
         processedExternalIds.add(adData.external_id);
         
-        const isNew = await this.db.isNewAdForLink(link.id, adData.external_id);
+        const isNew = await this.db.isNewAdForUser(link.user_id, adData.external_id);
         if (!isNew) {
           skippedCount.alreadyExists++;
-          logger.info('Skipping existing ad', { 
+          logger.info('Skipping existing ad (user-level dedup)', { 
             linkId: link.id, 
-            external_id: adData.external_id, 
+            external_id: adData.external_id,
             title: adData.title,
             location: adData.location || adData.address || 'unknown'
           });

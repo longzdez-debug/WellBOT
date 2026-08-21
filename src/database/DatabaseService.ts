@@ -179,6 +179,16 @@ export class DatabaseService {
     return result.rows.length === 0;
   }
 
+  async isNewAdForUser(userId: number, externalId: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `SELECT a.id FROM ads a 
+       JOIN links l ON a.link_id = l.id 
+       WHERE l.user_id = $1 AND a.external_id = $2`,
+      [userId, externalId]
+    );
+    return result.rows.length === 0;
+  }
+
   async getUserAdsCount(userId: number): Promise<{ linkId: number; linkPlatform: string; count: number }[]> {
     const result = await this.pool.query(
       `SELECT l.id as "linkId", l.platform as "linkPlatform", COUNT(a.id) as "count" 
