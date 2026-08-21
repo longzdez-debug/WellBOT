@@ -70,24 +70,33 @@ export class ParserScheduler {
         return true;
       });
 
-      // Process links in parallel with limit.
-      // Общие Set'ы для дедупа отправок в рамках ОДНОГО цикла парсинга:
-      // даже если несколько ссылок (в т.ч. у разных пользователей) дают одно
-      // и то же объявление, в ЛС и в канал оно уйдёт ровно один раз за цикл.
-      const notifiedDm = new Set<string>();
-      const notifiedChannel = new Set<string>();
+      // Собираем ВСЕ новые объявления по всем ссылкам
+      // Дедупликация будет на уровне пользователя (не по ссылке!)
+      const allNewAds: Array<{ ad: any; telegramId: number }> = [];
+      const allPriceDrops: Array<{ drop: any; telegramId: number; userId: number }> = [];
       const batchSize = 10;
       let totalNewAds = 0;
+
       for (let i = 0; i < uniqueLinks.length; i += batchSize) {
         const batch = uniqueLinks.slice(i, i + batchSize);
-        const results = await Promise.allSettled(batch.map(link => this.parseLink(link, notifiedDm, notifiedChannel)));
+        const results = await Promise.allSettled(batch.map(link => this.parseLink(link)));
         
-        // Track results for logging
         for (let j = 0; j < results.length; j++) {
           const result = results[j];
           const link = batch[j];
-          if (result.status === 'fulfilled') {
-            totalNewAds += result.value || 0;
+          if (result.status === 'fulfilled' && result.value) {
+            const { newAds, priceDrops } = result.value;
+            totalNewAds += newAds.length;
+            
+            const user = await this.db.getUserById(link.user_id);
+            if (user) {
+              for (const ad of newAds) {
+                allNewAds.push({ ad, telegramId: user.telegram_id });
+              }
+              for (const drop of priceDrops) {
+                allPriceDrops.push({ drop, telegramId: user.telegram_id, userId: user.id });
+              }
+            }
           } else {
             logger.error('Batch parseLink error', { 
               linkId: link.id, 
@@ -96,17 +105,68 @@ export class ParserScheduler {
           }
         }
         
-        // Small delay between batches
         if (i + batchSize < uniqueLinks.length) {
           await this.sleep(1000);
         }
+      }
+
+      // Дедупликация на уровне пользователя: telegramId + external_id
+      const notifiedDmByUser = new Set<string>();
+      const notifiedChannelByUser = new Set<string>();
+
+      // Отправляем новые объявления (без дублей)
+      for (const { ad, telegramId } of allNewAds) {
+        const dmKey = `${telegramId}|${ad.external_id}`;
+        if (notifiedDmByUser.has(dmKey)) {
+          logger.info('Skipping duplicate ad (already sent this cycle)', { telegramId, adId: ad.external_id });
+          continue;
+        }
+        notifiedDmByUser.add(dmKey);
+        
+        logger.info('Sending notification for ad', { 
+          adId: ad.id, 
+          telegramId,
+          imageUrl: ad.image_url || 'NO IMAGE'
+        });
+        await this.bot.sendNotification(telegramId, ad);
+        await this.sleep(200);
+      }
+
+      // Отправляем уведомления о снижении цены (без дублей)
+      for (const { drop, telegramId, userId } of allPriceDrops) {
+        const dmKey = `${telegramId}|${drop.externalId}`;
+        if (!notifiedDmByUser.has(dmKey)) {
+          notifiedDmByUser.add(dmKey);
+          logger.info('Sending price drop notification', { telegramId });
+          await this.bot.sendPriceDropNotification(telegramId, drop);
+        }
+        
+        const channelSub = await this.db.getActiveChannelSubscription(userId);
+        if (channelSub) {
+          const chKey = `${channelSub.channel_id}|${drop.externalId}`;
+          if (!notifiedChannelByUser.has(chKey)) {
+            notifiedChannelByUser.add(chKey);
+            try {
+              await this.bot.sendPriceDropNotification(channelSub.channel_id, drop);
+              logger.info('Sent price drop to channel', { channelId: channelSub.channel_id });
+            } catch (error: any) {
+              logger.error('Failed to send price drop to channel', { 
+                adId: drop.adId, 
+                channelId: channelSub.channel_id,
+                error: error.message
+              });
+            }
+          }
+        }
+        await this.sleep(200);
       }
 
       const duration = Date.now() - startTime;
       logger.info('Parsing cycle completed', { 
         duration: `${duration}ms`, 
         linksCount: uniqueLinks.length,
-        totalNewAds
+        totalNewAds,
+        uniqueAdsSent: notifiedDmByUser.size
       });
     } catch (error: any) {
       logger.error('Parsing cycle failed', { error: error.message });
@@ -115,7 +175,7 @@ export class ParserScheduler {
     }
   }
 
-  private async parseLink(link: any, notifiedDm: Set<string>, notifiedChannel: Set<string>): Promise<number> {
+  private async parseLink(link: any): Promise<{ newAds: any[]; priceDrops: any[] } | null> {
     const newAds: any[] = [];
     const priceDrops: any[] = [];
     
@@ -123,10 +183,9 @@ export class ParserScheduler {
       const parser = ParserFactory.getParser(link.platform);
       if (!parser) {
         logger.error('No parser found for platform', { platform: link.platform, linkId: link.id });
-        return 0;
+        return { newAds, priceDrops };
       }
 
-      // Таймаут на парсинг — 5 минут максимум
       const parsePromise = parser.parseUrl(link.url);
       const timeoutPromise = new Promise<never>((_, reject) => {
         setTimeout(() => reject(new Error('Parse timeout after 5 minutes')), 300000);
@@ -135,25 +194,22 @@ export class ParserScheduler {
       try {
         ads = await Promise.race([parsePromise, timeoutPromise]);
       } catch {
-        return 0;
+        return { newAds, priceDrops };
       }
       
-      // Защита: парсер обязан вернуть массив
       if (!Array.isArray(ads)) {
         logger.error('Parser returned non-array', { linkId: link.id, platform: link.platform, result: ads });
-        return 0;
+        return { newAds, priceDrops };
       }
       
       await this.db.updateLastParsed(link.id);
 
-      // Reset error count on successful parse
       if (link.error_count > 0) {
         await this.db.resetErrorCount(link.id);
       }
 
-      // Process new ads
       const skippedCount = { alreadyExists: 0, filtered: 0 };
-      const processedExternalIds = new Set<string>(); // Защита от дубликатов
+      const processedExternalIds = new Set<string>();
 
       logger.info('Starting to process ads', { 
         linkId: link.id, 
@@ -164,26 +220,11 @@ export class ParserScheduler {
       for (let i = 0; i < ads.length; i++) {
         const adData = ads[i];
         
-        // Защита от дубликатов в результате парсинга
         if (processedExternalIds.has(adData.external_id)) {
-          logger.info('Skipping duplicate external_id', { 
-            linkId: link.id, 
-            external_id: adData.external_id,
-            title: adData.title
-          });
           skippedCount.filtered++;
           continue;
         }
         processedExternalIds.add(adData.external_id);
-        
-        logger.info('Processing ad', { 
-          linkId: link.id, 
-          index: i,
-          external_id: adData.external_id, 
-          title: adData.title,
-          price: adData.price,
-          location: adData.location || adData.address || 'unknown'
-        });
         
         const isNew = await this.db.isNewAdForLink(link.id, adData.external_id);
         if (!isNew) {
@@ -194,16 +235,9 @@ export class ParserScheduler {
             title: adData.title,
             location: adData.location || adData.address || 'unknown'
           });
-          
-          // Проверяем снижение цены
           await this.checkPriceDrop(link.id, adData.external_id, adData.price, priceDrops);
           continue;
         }
-        
-        logger.info('Creating ad in database', { 
-          linkId: link.id, 
-          external_id: adData.external_id 
-        });
         
         const ad = await this.db.createAd(link.id, adData);
         if (ad) {
@@ -228,129 +262,10 @@ export class ParserScheduler {
         linkId: link.id, 
         totalAds: ads.length, 
         newAds: newAds.length,
-        skipped: skippedCount,
-        newAdsTitles: newAds.map(a => `${a.title} (${a.location || a.address || 'N/A'})`)
+        skipped: skippedCount
       });
 
-      // Send notifications for new ads (только в личку, не в канал!)
-      if (newAds.length > 0) {
-        logger.info('Attempting to send notifications', { 
-          linkId: link.id, 
-          userId: link.user_id,
-          newAdsCount: newAds.length 
-        });
-        
-        const user = await this.db.getUserById(link.user_id);
-        if (!user) {
-          logger.error('User not found for link', { linkId: link.id, userId: link.user_id });
-          return newAds.length;
-        }
-        
-        logger.info('User found, sending notifications', { 
-          userId: user.id, 
-          telegramId: user.telegram_id 
-        });
-        
-        // Уведомляем обо всех новых объявлениях ТОЛЬКО в личку.
-        // Общий для цикла Set не даёт отправить одно объявление дважды,
-        // если на него подписаны несколько ссылок одного пользователя.
-        for (const ad of newAds) {
-          try {
-            const dmKey = `${user.telegram_id}|${ad.external_id}`;
-            if (notifiedDm.has(dmKey)) {
-              logger.info('Skipping duplicate notification (already sent this cycle)', {
-                telegramId: user.telegram_id,
-                adId: ad.external_id,
-              });
-              continue;
-            }
-            notifiedDm.add(dmKey);
-
-            logger.info('Sending notification for ad', { 
-              adId: ad.id, 
-              telegramId: user.telegram_id,
-              imageUrl: ad.image_url || 'NO IMAGE'
-            });
-            await this.bot.sendNotification(user.telegram_id, ad);
-            
-            // Минимальная задержка между уведомлениями (200мс)
-            await this.sleep(200);
-          } catch (error: any) {
-            logger.error('Failed to send notification', { 
-              linkId: link.id, 
-              adId: ad.id, 
-              error: error.message,
-              stack: error.stack
-            });
-          }
-        }
-        
-        logger.info('New ads found and notified', { 
-          linkId: link.id, 
-          totalNew: newAds.length,
-          notified: newAds.length
-        });
-      }
-      
-      // Send price drop notifications (в канал И в личку)
-      if (priceDrops.length > 0) {
-        logger.info('Price drops detected', { 
-          linkId: link.id, 
-          priceDropsCount: priceDrops.length 
-        });
-        
-        const user = await this.db.getUserById(link.user_id);
-        if (user) {
-          // Получаем привязанный канал
-          const channelSub = await this.db.getActiveChannelSubscription(user.id);
-          
-          for (const priceDrop of priceDrops) {
-            try {
-              // В ЛС — один раз за цикл (общий Set)
-              const dmKey = `${user.telegram_id}|${priceDrop.externalId}`;
-              if (!notifiedDm.has(dmKey)) {
-                notifiedDm.add(dmKey);
-                logger.info('Sending price drop notification', { 
-                  adId: priceDrop.adId, 
-                  telegramId: user.telegram_id 
-                });
-                await this.bot.sendPriceDropNotification(user.telegram_id, priceDrop);
-              }
-              
-              // Если есть канал — отправляем туда тоже (один раз за цикл)
-              if (channelSub) {
-                const chKey = `${channelSub.channel_id}|${priceDrop.externalId}`;
-                if (!notifiedChannel.has(chKey)) {
-                  notifiedChannel.add(chKey);
-                  try {
-                    await this.bot.sendPriceDropNotification(channelSub.channel_id, priceDrop);
-                    logger.info('Sent price drop to channel', { 
-                      adId: priceDrop.adId, 
-                      channelId: channelSub.channel_id 
-                    });
-                  } catch (error: any) {
-                    logger.error('Failed to send price drop to channel', { 
-                      linkId: link.id, 
-                      adId: priceDrop.adId, 
-                      channelId: channelSub.channel_id,
-                      error: error.message
-                    });
-                  }
-                }
-              }
-              
-              await this.sleep(500);
-            } catch (error: any) {
-              logger.error('Failed to send price drop notification', { 
-                linkId: link.id, 
-                adId: priceDrop.adId, 
-                error: error.message,
-                stack: error.stack
-              });
-            }
-          }
-        }
-      }
+      return { newAds, priceDrops };
     } catch (error: any) {
       logger.error('Failed to parse link', { linkId: link.id, url: link.url, error: error.message });
       
@@ -362,10 +277,8 @@ export class ParserScheduler {
         logger.warn('Link marked as inactive due to errors', { linkId: link.id, errorCount: currentLink.error_count });
       }
       
-      return 0;
+      return { newAds, priceDrops };
     }
-    
-    return newAds.length;
   }
 
   private async checkPriceDrop(linkId: number, externalId: string, newPrice: string, priceDrops: any[]): Promise<void> {
