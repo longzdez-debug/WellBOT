@@ -248,14 +248,19 @@ export class DatabaseService {
   // может быть добавлена несколько раз (и даже разными пользователями) — у каждой ссылки
   // будет своя запись ads со своим id, но с одинаковым external_id.
   async createPriceDropRecord(adId: number, externalId: string, oldPrice: string, newPrice: string, changePercent: number): Promise<boolean> {
-    const result = await this.pool.query(
-      `INSERT INTO price_history (ad_id, external_id, old_price, new_price, price_change_percent, notified_at) 
-       VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
-       ON CONFLICT (external_id, old_price, new_price) DO NOTHING`,
-      [adId, externalId, oldPrice, newPrice, changePercent]
-    );
-    // true — запись создана (снижение не фиксировали ранее), false — уже была
-    return (result.rowCount || 0) > 0;
+    try {
+      const result = await this.pool.query(
+        `INSERT INTO price_history (ad_id, external_id, old_price, new_price, price_change_percent, notified_at) 
+         VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+         ON CONFLICT (ad_id, old_price, new_price) DO NOTHING`,
+        [adId, externalId, oldPrice, newPrice, changePercent]
+      );
+      return (result.rowCount || 0) > 0;
+    } catch (error: any) {
+      // Если нет уникального индекса — просто логируем и пропускаем
+      logger.warn('Price drop record insert failed (no unique constraint)', { error: error.message });
+      return false;
+    }
   }
 
   // Обновляем сохранённую цену объявления.
