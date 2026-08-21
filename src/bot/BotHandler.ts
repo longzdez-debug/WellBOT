@@ -2,7 +2,6 @@ import TelegramBot, { Message, CallbackQuery } from 'node-telegram-bot-api';
 import { DatabaseService } from '../database/DatabaseService';
 import { RateLimiter } from '../utils/rateLimiter';
 import { ParserFactory } from '../parsers/ParserFactory';
-import { YandexMapsService } from '../services/YandexMapsService';
 // venue (нативная карточка) отключён. Для включения раскомментируйте и передайте в AdPresenter.
 // import { LocationService } from '../services/LocationService';
 import { AdPresenter } from '../services/AdPresenter';
@@ -19,7 +18,6 @@ export class BotHandler {
   private db: DatabaseService;
   private rateLimiter: RateLimiter;
   private userStates: Map<number, string> = new Map();
-  private yandexMaps: YandexMapsService | null = null;
   private adPresenter: AdPresenter;
   private telegramSender: TelegramSender;
   private pendingLinks: Map<number, string> = new Map(); // userId -> URL для подтверждения
@@ -48,19 +46,6 @@ export class BotHandler {
     this.rateLimiter = new RateLimiter(10, 60000);
     this.scheduler = scheduler ?? null;
 
-    // Инициализируем Yandex Maps если есть API ключ
-    const yandexApiKey = process.env.YANDEX_MAPS_API_KEY;
-    const staticMapsApiKey = process.env.YANDEX_STATIC_MAPS_API_KEY;
-    if (yandexApiKey) {
-      this.yandexMaps = new YandexMapsService(yandexApiKey, staticMapsApiKey);
-      logger.info('Yandex Maps service initialized');
-    } else {
-      logger.warn('YANDEX_MAPS_API_KEY not set, map features disabled');
-    }
-
-    // venue (нативная карточка) отключён — Yandex static maps работает.
-    // Для включения: const locationService = new LocationService();
-    // и передать locationService вторым аргументом в AdPresenter.
     this.adPresenter = new AdPresenter();
     this.telegramSender = new TelegramSender(this.bot);
 
