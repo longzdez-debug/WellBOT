@@ -8,6 +8,7 @@ export class TelegramSender {
   private lastSendTime: number = 0;
   private readonly MIN_SEND_INTERVAL_MS = 1000; // Минимум 1 секунда между сообщениями
   private readonly MAX_MEDIA_PER_GROUP = 10; // Telegram лимит для media group
+  private readonly MAX_CAPTION_LENGTH = 1024; // Telegram лимит для caption
   private retryAfterTimer: number = 0; // Таймер для обработки 429
 
   constructor(bot: TelegramBot) {
@@ -31,6 +32,12 @@ export class TelegramSender {
     }
     
     this.lastSendTime = Date.now();
+  }
+
+  private truncateCaption(text: string): string {
+    if (text.length <= this.MAX_CAPTION_LENGTH) return text;
+    logger.warn('Caption too long, truncating', { originalLength: text.length, maxLength: this.MAX_CAPTION_LENGTH });
+    return text.slice(0, this.MAX_CAPTION_LENGTH);
   }
 
   private handleTelegramError(error: any): void {
@@ -59,10 +66,11 @@ export class TelegramSender {
         const mediaToSend = formatted.media.slice(0, this.MAX_MEDIA_PER_GROUP);
         
         // Формируем массив для sendMediaGroup: первое фото с caption
+        const caption = mediaToSend.length > 0 ? this.truncateCaption(formatted.text) : undefined;
         const inputMedia: TelegramBot.InputMediaPhoto[] = mediaToSend.map((url, index) => ({
           type: 'photo',
           media: url,
-          caption: index === 0 ? formatted.text : undefined,
+          caption: index === 0 ? caption : undefined,
         }));
         
         try {
@@ -76,7 +84,7 @@ export class TelegramSender {
           });
           // Fallback: отправляем первое фото с подписью
           await this.bot.sendPhoto(chatId, mediaToSend[0], {
-            caption: formatted.text,
+            caption: this.truncateCaption(formatted.text),
             parse_mode: 'HTML',
           });
         }
