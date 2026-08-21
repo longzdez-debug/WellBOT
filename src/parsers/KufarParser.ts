@@ -76,8 +76,8 @@ async function fetchDescriptionFromHtml(adUrl: string, axiosInstance: AxiosInsta
     } catch (error: any) {
       // Если 429 — ждём и повторяем
       if (error.response?.status === 429 && attempt < maxRetries - 1) {
-        const waitMs = 2000 * (attempt + 1);
-        logger.warn(`429 from Kufar, retrying in ${waitMs}ms (attempt ${attempt + 1}/${maxRetries})`, { url: adUrl });
+        const waitMs = 3000 + Math.random() * 3000;
+        logger.warn(`429 from Kufar, retrying in ${Math.round(waitMs)}ms (attempt ${attempt + 1}/${maxRetries})`, { url: adUrl });
         await new Promise(resolve => setTimeout(resolve, waitMs));
         continue;
       }
@@ -328,7 +328,7 @@ export class KufarParser extends BaseParser {
         currentPage++;
         
         // Задержка между страницами чтобы не перегружать API
-        await this.sleep(200);
+        await this.sleep(500 + Math.random() * 500);
       }
 
       logger.info('Kufar pagination complete', { totalCollected: allPaginatedAds.length });
@@ -337,6 +337,7 @@ export class KufarParser extends BaseParser {
       // Но НЕ дублируем —广告ные объявления часто те же, что и в paginated
       let polepositionAds: any[] = [];
       try {
+        await this.sleep(500 + Math.random() * 500);
         const poleResponse = await this.axiosInstance.get(
           'https://api.kufar.by/search-api/v2/search/poleposition',
           {
@@ -533,7 +534,7 @@ export class KufarParser extends BaseParser {
         logger.info(`Fetching descriptions from HTML for ${adsNeedingDesc.length} ads`);
         
         // Ограничиваем количество запросов к HTML (чтобы не улететь в rate limit)
-        const maxHtmlFetches = Math.min(adsNeedingDesc.length, 20);
+        const maxHtmlFetches = Math.min(adsNeedingDesc.length, 15);
         for (let i = 0; i < maxHtmlFetches; i++) {
           const ad = adsNeedingDesc[i];
           const desc = await fetchDescriptionFromHtml(ad.ad_url, this.axiosInstance);
@@ -541,8 +542,9 @@ export class KufarParser extends BaseParser {
             ad.description = desc.substring(0, 1500);
             logger.info(`Fetched description for ad ${ad.external_id}`, { length: desc.length });
           }
-          // Задержка между запросами чтобы избежать 429
-          await new Promise(resolve => setTimeout(resolve, 1200));
+          // Задержка с джиттером между запросами (2-4 сек) чтобы избежать 429
+          const delay = 2000 + Math.random() * 2000;
+          await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
 
