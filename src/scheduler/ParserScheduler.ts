@@ -273,8 +273,8 @@ export class ParserScheduler {
             });
             await this.bot.sendNotification(user.telegram_id, ad);
             
-            // Delay between notifications to prevent message merging
-            await this.sleep(3000);
+            // Минимальная задержка между уведомлениями (500мс)
+            await this.sleep(500);
           } catch (error: any) {
             logger.error('Failed to send notification', { 
               linkId: link.id, 
@@ -339,7 +339,7 @@ export class ParserScheduler {
                 }
               }
               
-              await this.sleep(3000);
+              await this.sleep(500);
             } catch (error: any) {
               logger.error('Failed to send price drop notification', { 
                 linkId: link.id, 

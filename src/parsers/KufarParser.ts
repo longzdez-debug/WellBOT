@@ -542,7 +542,7 @@ export class KufarParser extends BaseParser {
             logger.info(`Fetched description for ad ${ad.external_id}`, { length: desc.length });
           }
           // Задержка между запросами чтобы избежать 429
-          await new Promise(resolve => setTimeout(resolve, 2500));
+          await new Promise(resolve => setTimeout(resolve, 1200));
         }
       }
 
