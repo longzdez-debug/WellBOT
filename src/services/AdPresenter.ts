@@ -1,5 +1,4 @@
 import { Ad } from '../types';
-import { YandexMapsService } from './YandexMapsService';
 import { LocationService } from './LocationService';
 
 export interface FormattedAd {
@@ -9,11 +8,9 @@ export interface FormattedAd {
 }
 
 export class AdPresenter {
-  private yandexMaps: YandexMapsService | null;
   private locationService: LocationService | null;
 
-  constructor(yandexMaps: YandexMapsService | null, locationService: LocationService | null = null) {
-    this.yandexMaps = yandexMaps;
+  constructor(locationService: LocationService | null = null) {
     this.locationService = locationService;
   }
 
@@ -89,16 +86,18 @@ export class AdPresenter {
       media.push(ad.image_url);
     }
 
-    if (fullAddress && this.yandexMaps) {
-      try {
-        const mapUrl = await this.yandexMaps.getMapForAddress(fullAddress);
-        if (mapUrl) {
-          media.push(mapUrl);
-        }
-      } catch {
-        // Map generation failed, continue without map
-      }
-    }
+    // Карта отключена — Yandex Maps API запросы замедляют отправку уведомлений.
+    // Если нужен адрес, он уже отображается в тексте.
+    // if (fullAddress && this.yandexMaps) {
+    //   try {
+    //     const mapUrl = await this.yandexMaps.getMapForAddress(fullAddress);
+    //     if (mapUrl) {
+    //       media.push(mapUrl);
+    //     }
+    //   } catch {
+    //     // Map generation failed, continue without map
+    //   }
+    // }
 
     if (fullAddress && this.locationService) {
       try {

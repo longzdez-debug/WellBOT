@@ -273,8 +273,8 @@ export class ParserScheduler {
             });
             await this.bot.sendNotification(user.telegram_id, ad);
             
-            // Минимальная задержка между уведомлениями (500мс)
-            await this.sleep(500);
+            // Минимальная задержка между уведомлениями (200мс)
+            await this.sleep(200);
           } catch (error: any) {
             logger.error('Failed to send notification', { 
               linkId: link.id, 

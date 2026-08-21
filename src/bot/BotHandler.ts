@@ -61,7 +61,7 @@ export class BotHandler {
     // venue (нативная карточка) отключён — Yandex static maps работает.
     // Для включения: const locationService = new LocationService();
     // и передать locationService вторым аргументом в AdPresenter.
-    this.adPresenter = new AdPresenter(this.yandexMaps);
+    this.adPresenter = new AdPresenter();
     this.telegramSender = new TelegramSender(this.bot);
 
     this.setupHandlers();
