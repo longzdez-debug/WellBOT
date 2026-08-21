@@ -14,67 +14,78 @@ import * as cheerio from 'cheerio';
  * поэтому приходится парсить HTML.
  */
 async function fetchDescriptionFromHtml(adUrl: string, axiosInstance: AxiosInstance): Promise<string | null> {
-  try {
-    const res = await axiosInstance.get(adUrl, {
-      headers: {
-        'Host': new URL(adUrl).hostname,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-      timeout: 8000,
-    });
-    
-    const html = res.data;
-    const $ = cheerio.load(html);
-    
-    const scripts = $('script').map((_, el) => $(el).html() || '').toArray();
-    for (const script of scripts) {
-      if (script && script.includes('"body"')) {
-        const bodyIndex = script.indexOf('"body"');
-        if (bodyIndex === -1) continue;
-        
-        let colonIndex = script.indexOf(':', bodyIndex + 6);
-        if (colonIndex === -1) continue;
-        
-        let quoteStart = script.indexOf('"', colonIndex);
-        if (quoteStart === -1) continue;
-        quoteStart++;
-        
-        let value = '';
-        for (let i = quoteStart; i < script.length; i++) {
-          const ch = script[i];
-          if (ch === String.fromCharCode(92) && i + 1 < script.length) {
-            const next = script[i + 1];
-            if (next === 'n') {
-              value += String.fromCharCode(10);
-            } else if (next === 't') {
-              value += ' ';
+  const maxRetries = 3;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const res = await axiosInstance.get(adUrl, {
+        headers: {
+          'Host': new URL(adUrl).hostname,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+        timeout: 8000,
+      });
+      
+      const html = res.data;
+      const $ = cheerio.load(html);
+      
+      const scripts = $('script').map((_, el) => $(el).html() || '').toArray();
+      for (const script of scripts) {
+        if (script && script.includes('"body"')) {
+          const bodyIndex = script.indexOf('"body"');
+          if (bodyIndex === -1) continue;
+          
+          let colonIndex = script.indexOf(':', bodyIndex + 6);
+          if (colonIndex === -1) continue;
+          
+          let quoteStart = script.indexOf('"', colonIndex);
+          if (quoteStart === -1) continue;
+          quoteStart++;
+          
+          let value = '';
+          for (let i = quoteStart; i < script.length; i++) {
+            const ch = script[i];
+            if (ch === String.fromCharCode(92) && i + 1 < script.length) {
+              const next = script[i + 1];
+              if (next === 'n') {
+                value += String.fromCharCode(10);
+              } else if (next === 't') {
+                value += ' ';
+              } else {
+                value += next;
+              }
+              i++;
+            } else if (ch === '"') {
+              break;
             } else {
-              value += next;
+              value += ch;
             }
-            i++;
-          } else if (ch === '"') {
-            break;
-          } else {
-            value += ch;
+          }
+          
+          if (value) {
+            return value;
           }
         }
-        
-        if (value) {
-          return value;
-        }
       }
+      
+      const metaDesc = $('meta[name="description"]').attr('content') || '';
+      if (metaDesc && metaDesc.length > 50) {
+        return metaDesc;
+      }
+      
+      return null;
+    } catch (error: any) {
+      // Если 429 — ждём и повторяем
+      if (error.response?.status === 429 && attempt < maxRetries - 1) {
+        const waitMs = 2000 * (attempt + 1);
+        logger.warn(`429 from Kufar, retrying in ${waitMs}ms (attempt ${attempt + 1}/${maxRetries})`, { url: adUrl });
+        await new Promise(resolve => setTimeout(resolve, waitMs));
+        continue;
+      }
+      logger.warn('Failed to fetch description from HTML', { url: adUrl, error: error.message });
+      return null;
     }
-    
-    const metaDesc = $('meta[name="description"]').attr('content') || '';
-    if (metaDesc && metaDesc.length > 50) {
-      return metaDesc;
-    }
-    
-    return null;
-  } catch (error: any) {
-    logger.warn('Failed to fetch description from HTML', { url: adUrl, error: error.message });
-    return null;
   }
+  return null;
 }
 
 /**
@@ -531,7 +542,7 @@ export class KufarParser extends BaseParser {
             logger.info(`Fetched description for ad ${ad.external_id}`, { length: desc.length });
           }
           // Задержка между запросами чтобы избежать 429
-          await new Promise(resolve => setTimeout(resolve, 800));
+          await new Promise(resolve => setTimeout(resolve, 2500));
         }
       }
 
